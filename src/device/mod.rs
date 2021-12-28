@@ -174,6 +174,38 @@ impl DeviceHandle {
             threads,
         })
     }
+    
+    pub fn new_with_notify(name: &str, config: DeviceConfig, exit_notify: Arc<AtomicBool>) -> Result<DeviceHandle, Error> {
+        let n_threads = config.n_threads;
+        let mut wg_interface = Device::new(name, config)?;
+        wg_interface.open_listen_socket(0)?; // Start listening on a random port
+
+        let interface_lock = Arc::new(Lock::new(wg_interface));
+
+        let mut threads = vec![];
+        let live_cnt = Arc::new(Mutex::new(n_threads));
+
+        for i in 0..n_threads {
+            threads.push({
+                let dev = Arc::clone(&interface_lock);
+                let live_cnt_copy = live_cnt.clone();
+                let exit_notify_copy = exit_notify.clone();
+                thread::spawn(move || {
+                    DeviceHandle::event_loop(i, &dev);
+                    let mut cnt = live_cnt_copy.lock().unwrap();
+                    *cnt -= 1;
+                    if *cnt == 0 {
+                        exit_notify_copy.store(true, Ordering::Relaxed);
+                    }
+                })
+            });
+        }
+
+        Ok(DeviceHandle {
+            device: interface_lock,
+            threads,
+        })
+    }
 
     pub fn wait(&mut self) {
         while let Some(thread) = self.threads.pop() {
